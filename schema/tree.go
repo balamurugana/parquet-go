@@ -380,6 +380,44 @@ func (tree *Tree) ToParquetSchema() (schemaList []*parquet.SchemaElement, valueE
 	return schemaList, valueElements, nil
 }
 
+func (tree *Tree) addAll(schemaList []*parquet.SchemaElement, schemaPrefix string, length int32) ([]*parquet.SchemaElement, error) {
+	var err error
+
+	for i := int32(0); i < length; i++ {
+		schemaElement := schemaList[i]
+		name := schemaElement.Name
+		if schemaPrefix != "" {
+			name = schemaPrefix + "." + name
+		}
+
+		element := new(Element)
+		element.SchemaElement = *schemaElement
+		element.PathInSchema = name
+		element.PathInTree = name
+		if schemaElement.NumChildren != nil {
+			element.numChildren = *element.NumChildren
+
+			children := NewTree()
+			if schemaList, err = children.addAll(schemaList[1+1:], element.PathInSchema, element.numChildren); err != nil {
+				return nil, err
+			}
+			element.Children = children
+		}
+
+		if err = tree.Set(element.PathInTree, element); err != nil {
+			return nil, err
+		}
+	}
+
+	return schemaList[length+1:], nil
+}
+
+// AddAll - add all schema elements.
+func (tree *Tree) AddAll(schemaList []*parquet.SchemaElement) error {
+	_, err := tree.addAll(schemaList[1:], "", *schemaList[0].NumChildren)
+	return err
+}
+
 // NewTree - creates new schema tree.
 func NewTree() *Tree {
 	return &Tree{

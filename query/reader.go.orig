@@ -1,0 +1,176 @@
+/*
+ * Minio Cloud Storage, (C) 2019 Minio, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package parquet
+
+import (
+	"bytes"
+	"encoding/binary"
+	"io"
+	"strings"
+
+	"git.apache.org/thrift.git/lib/go/thrift"
+	"github.com/minio/parquet-go/encoding"
+	"github.com/minio/parquet-go/gen-go/parquet"
+)
+
+// GetReaderFunc - function type returning io.ReadCloser for requested offset/length.
+type GetReaderFunc func(offset, length int64) (io.ReadCloser, error)
+
+// Reader - denotes parquet file.
+type Reader struct {
+	getReaderFunc GetReaderFunc
+	fileMetadata  *parquet.FileMetaData
+	columnNames   []string
+	query         *Query
+	eof           bool
+}
+
+// Read - reads single record.
+func (reader *Reader) Read() ([]*Result, error) {
+	if reader.eof {
+		return nil, io.EOF
+	}
+
+	aggregateFuncs := reader.query.GetAggregateFuncs()
+	switch len(aggregateFuncs) {
+	case 0:
+		// FIXME: no aggregate functions in selection and we have to handle column selections.
+
+	case 1:
+		if aggregateFuncs[0].Name() == "COUNT" {
+			result := &Result{
+				Name:  aggregateFuncs[0].AliasName(),
+				Value: uint64(reader.fileMetadata.GetNumRows()),
+			}
+
+			reader.eof = true
+			return []*Result{result}, nil
+		}
+		fallthrough
+
+	default:
+		resultMap := make(map[string]*Result)
+
+		rowGroups := reader.fileMetadata.GetRowGroups()
+
+		for _, rowGroup := range rowGroups {
+			columns := rowGroup.GetColumns()
+
+			for _, column := range columns {
+				metadata := column.GetMetaData()
+				pathInSchema := metadata.GetPathInSchema()
+				columnNameInSchema := strings.Join(pathInSchema, ".")
+				statistics := metadata.GetStatistics()
+
+				for _, function := range aggregateFuncs {
+					columnName := function.ColumnName()
+					if columnName != columnNameInSchema {
+						continue
+					}
+
+					switch function.Name() {
+					case "MAX":
+						data := statistics.GetMaxValue()
+						newMaxValue, err := encoding.PlainDecode(bytes.NewReader(data), metadata.GetType(), 1, 0)
+						if err != nil {
+							return nil, err
+						}
+
+						if result := resultMap[columnName]; result != nil {
+							result.Value = max(result.Value, newMaxValue, metadata.GetType())
+						} else {
+							resultMap[columnName] = &Result{
+								Name:  function.AliasName(),
+								Value: newMaxValue,
+							}
+						}
+					}
+				}
+			}
+		}
+
+		var results []*Result
+		for _, function := range aggregateFuncs {
+			columnName := function.ColumnName()
+			results = append(results, resultMap[columnName])
+		}
+
+		return results, nil
+	}
+
+	panic("FIXME")
+}
+
+// Close - closes underneath readers.
+func (reader *Reader) Close() (err error) {
+	panic("FIXME")
+}
+
+func getFooterSize(getReaderFunc GetReaderFunc) (size int64, err error) {
+	rc, err := getReaderFunc(-8, 4)
+	if err != nil {
+		return 0, err
+	}
+	defer rc.Close()
+
+	buf := make([]byte, 4)
+	if _, err = io.ReadFull(rc, buf); err != nil {
+		return 0, err
+	}
+
+	size = int64(binary.LittleEndian.Uint32(buf))
+
+	return size, nil
+}
+
+func getFileMetadata(getReaderFunc GetReaderFunc) (metadata *parquet.FileMetaData, err error) {
+	var size int64
+	if size, err = getFooterSize(getReaderFunc); err != nil {
+		return nil, err
+	}
+
+	var rc io.ReadCloser
+	if rc, err = getReaderFunc(-(8 + size), size); err != nil {
+		return nil, err
+	}
+
+	defer rc.Close()
+
+	metadata = parquet.NewFileMetaData()
+	pf := thrift.NewTCompactProtocolFactory()
+	protocol := pf.GetProtocol(thrift.NewStreamTransportR(rc))
+	if err = metadata.Read(protocol); err != nil {
+		return nil, err
+	}
+
+	return metadata, nil
+}
+
+// NewReader - creates new parquet reader. Reader calls getReaderFunc to get required data range for given columnNames. If columnNames is empty, all columns are used.
+func NewReader(getReaderFunc GetReaderFunc, columnNames []string, query *Query) (*Reader, error) {
+	fileMetadata, err := getFileMetadata(getReaderFunc)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Reader{
+		getReaderFunc: getReaderFunc,
+		fileMetadata:  fileMetadata,
+		columnNames:   columnNames,
+		query:         query,
+	}, nil
+}

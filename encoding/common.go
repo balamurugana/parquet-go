@@ -17,6 +17,9 @@
 package encoding
 
 import (
+	"bytes"
+	"encoding/binary"
+
 	"github.com/minio/parquet-go/common"
 )
 
@@ -35,4 +38,85 @@ func varIntEncode(ui64 uint64) []byte {
 	data[length-1] &= 0x7F
 
 	return data
+}
+
+func varIntDecode(reader *bytes.Reader) (v uint64, err error) {
+	var b byte
+	var shift uint64
+
+	for {
+		if b, err = reader.ReadByte(); err != nil {
+			return 0, err
+		}
+
+		if v |= ((uint64(b) & 0x7F) << shift); b&0x80 == 0 {
+			break
+		}
+
+		shift += 7
+	}
+
+	return v, nil
+}
+
+func bytesToUint32(buf []byte) uint32 {
+	return binary.LittleEndian.Uint32(buf)
+}
+
+func i64sToi32s(i64s []int64) (i32s []int32) {
+	i32s = make([]int32, len(i64s))
+	for i := range i64s {
+		i32s[i] = int32(i64s[i])
+	}
+
+	return i32s
+}
+
+func bitPackedDecode(reader *bytes.Reader, header, bitWidth uint64) (result []int64, err error) {
+	count := header * 8
+
+	if count == 0 {
+		return result, nil
+	}
+
+	if bitWidth == 0 {
+		return make([]int64, count), nil
+	}
+
+	data := make([]byte, header*bitWidth)
+	if _, err = reader.Read(data); err != nil {
+		return nil, err
+	}
+
+	var val, used, left, b uint64
+
+	valNeedBits := bitWidth
+	i := -1
+	for {
+		if left <= 0 {
+			i++
+			if i >= len(data) {
+				break
+			}
+
+			b = uint64(data[i])
+			left = 8
+			used = 0
+		}
+
+		if left >= valNeedBits {
+			val |= ((b >> used) & ((1 << valNeedBits) - 1)) << (bitWidth - valNeedBits)
+			result = append(result, int64(val))
+			val = 0
+			left -= valNeedBits
+			used += valNeedBits
+			valNeedBits = bitWidth
+		} else {
+			val |= (b >> used) << (bitWidth - valNeedBits)
+			valNeedBits -= left
+			left = 0
+		}
+	}
+
+	return result, nil
 }

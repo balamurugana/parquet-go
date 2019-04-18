@@ -1,0 +1,124 @@
+package parquet
+
+import (
+	"bytes"
+	"fmt"
+
+	"github.com/minio/parquet-go/gen-go/parquet"
+)
+
+func max(value1, value2 interface{}, parquetType parquet.Type) interface{} {
+	if value2 == nil {
+		return value1
+	}
+
+	if value1 == nil {
+		return value2
+	}
+
+	switch parquetType {
+	case parquet.Type_BOOLEAN:
+		v1, ok := value1.(bool)
+		if !ok {
+			panic(fmt.Errorf("expected bool value"))
+		}
+
+		v2, ok := value2.(bool)
+		if !ok {
+			panic(fmt.Errorf("expected bool value"))
+		}
+
+		if v1 {
+			return v1
+		}
+
+		return v2
+
+	case parquet.Type_INT32:
+		v1, ok := value1.(int32)
+		if !ok {
+			panic(fmt.Errorf("expected int32 value"))
+		}
+
+		v2, ok := value2.(int32)
+		if !ok {
+			panic(fmt.Errorf("expected int32 value"))
+		}
+
+		if v1 < v2 {
+			return v2
+		}
+
+		return v1
+
+	case parquet.Type_INT64:
+		v1, ok := value1.(int64)
+		if !ok {
+			panic(fmt.Errorf("expected int64 value"))
+		}
+
+		v2, ok := value2.(int64)
+		if !ok {
+			panic(fmt.Errorf("expected int64 value"))
+		}
+
+		if v1 < v2 {
+			return v2
+		}
+
+		return v1
+
+	case parquet.Type_FLOAT:
+		v1, ok := value1.(float32)
+		if !ok {
+			panic(fmt.Errorf("expected float32 value"))
+		}
+
+		v2, ok := value2.(float32)
+		if !ok {
+			panic(fmt.Errorf("expected float32 value"))
+		}
+
+		if v1 < v2 {
+			return v2
+		}
+
+		return v1
+
+	case parquet.Type_DOUBLE:
+		v1, ok := value1.(float64)
+		if !ok {
+			panic(fmt.Errorf("expected float64 value"))
+		}
+
+		v2, ok := value2.(float64)
+		if !ok {
+			panic(fmt.Errorf("expected float64 value"))
+		}
+
+		if v1 < v2 {
+			return v2
+		}
+
+		return v1
+
+	case parquet.Type_INT96, parquet.Type_BYTE_ARRAY, parquet.Type_FIXED_LEN_BYTE_ARRAY:
+		v1, ok := value1.([]byte)
+		if !ok {
+			panic(fmt.Errorf("expected byte slice value"))
+		}
+
+		v2, ok := value2.([]byte)
+		if !ok {
+			panic(fmt.Errorf("expected byte slice value"))
+		}
+
+		if bytes.Compare(v1, v2) < 0 {
+			return v2
+		}
+
+		return v1
+	}
+
+	panic(fmt.Errorf("unsupported parquet type %v", parquetType))
+}

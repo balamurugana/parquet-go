@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"git.apache.org/thrift.git/lib/go/thrift"
+	"github.com/minio/parquet-go/encoding"
 	"github.com/minio/parquet-go/gen-go/parquet"
 )
 
@@ -190,7 +191,7 @@ func readPage(
 		page.Header = pageHeader
 		table := new(table)
 		table.Path = path
-		values, err := readValues(bytesReader, metadata.GetType(),
+		values, err := encoding.PlainDecode(bytesReader, metadata.GetType(),
 			uint64(pageHeader.DictionaryPageHeader.GetNumValues()), 0)
 		if err != nil {
 			return nil, 0, 0, err
@@ -222,8 +223,8 @@ func readPage(
 
 		var repetitionLevels []int64
 		if maxRepetitionLevel > 0 {
-			values, _, err := readDataPageValues(bytesReader, parquet.Encoding_RLE, parquet.Type_INT64,
-				-1, numValues, getBitWidth(uint64(maxRepetitionLevel)))
+			values, err := encoding.Decode(bytesReader, parquet.Encoding_RLE, parquet.Type_INT64,
+				numValues, getBitWidth(uint64(maxRepetitionLevel)))
 			if err != nil {
 				return nil, 0, 0, err
 			}
@@ -237,8 +238,8 @@ func readPage(
 
 		var definitionLevels []int64
 		if maxDefinitionLevel > 0 {
-			values, _, err := readDataPageValues(bytesReader, parquet.Encoding_RLE, parquet.Type_INT64,
-				-1, numValues, getBitWidth(uint64(maxDefinitionLevel)))
+			values, err := encoding.Decode(bytesReader, parquet.Encoding_RLE, parquet.Type_INT64,
+				numValues, getBitWidth(uint64(maxDefinitionLevel)))
 			if err != nil {
 				return nil, 0, 0, err
 			}
@@ -256,17 +257,19 @@ func readPage(
 			}
 		}
 
-		var convertedType parquet.ConvertedType = -1
+		var convertedType *parquet.ConvertedType
 		if schemaElements[columnNameIndexMap[name]].IsSetConvertedType() {
-			convertedType = schemaElements[columnNameIndexMap[name]].GetConvertedType()
+			ct := schemaElements[columnNameIndexMap[name]].GetConvertedType()
+			convertedType = &ct
 		}
-		values, valueType, err := readDataPageValues(bytesReader, encodingType, metadata.GetType(),
-			convertedType, uint64(len(definitionLevels))-numNulls,
+		values, err := encoding.Decode(bytesReader, encodingType, metadata.GetType(),
+			uint64(len(definitionLevels))-numNulls,
 			uint64(schemaElements[columnNameIndexMap[name]].GetTypeLength()))
 		if err != nil {
 			return nil, 0, 0, err
 		}
-		tableValues := getTableValues(values, valueType)
+
+		tableValues := encoding.ToConvertedValues(values, metadata.GetType(), convertedType)
 
 		table := new(table)
 		table.Path = path
@@ -415,8 +418,8 @@ func (page *page) getRLDLFromRawData(columnNameIndexMap map[string]int, schemaEl
 
 		var repetitionLevels []int64
 		if maxRepetitionLevel > 0 {
-			values, _, err := readDataPageValues(bytesReader, parquet.Encoding_RLE, parquet.Type_INT64,
-				-1, numValues, getBitWidth(uint64(maxRepetitionLevel)))
+			values, err := encoding.Decode(bytesReader, parquet.Encoding_RLE, parquet.Type_INT64,
+				numValues, getBitWidth(uint64(maxRepetitionLevel)))
 			if err != nil {
 				return 0, 0, err
 			}
@@ -430,8 +433,8 @@ func (page *page) getRLDLFromRawData(columnNameIndexMap map[string]int, schemaEl
 
 		var definitionLevels []int64
 		if maxDefinitionLevel > 0 {
-			values, _, err := readDataPageValues(bytesReader, parquet.Encoding_RLE, parquet.Type_INT64,
-				-1, numValues, getBitWidth(uint64(maxDefinitionLevel)))
+			values, err := encoding.Decode(bytesReader, parquet.Encoding_RLE, parquet.Type_INT64,
+				numValues, getBitWidth(uint64(maxDefinitionLevel)))
 			if err != nil {
 				return 0, 0, err
 			}
@@ -475,7 +478,7 @@ func (page *page) getValueFromRawData(columnNameIndexMap map[string]int, schemaE
 	case parquet.PageType_DICTIONARY_PAGE:
 		bytesReader := bytes.NewReader(page.RawData)
 		var values interface{}
-		values, err = readValues(bytesReader, page.DataType,
+		values, err = encoding.PlainDecode(bytesReader, page.DataType,
 			uint64(page.Header.DictionaryPageHeader.GetNumValues()), 0)
 		if err != nil {
 			return err
@@ -501,20 +504,21 @@ func (page *page) getValueFromRawData(columnNameIndexMap map[string]int, schemaE
 		}
 
 		name := strings.Join(page.DataTable.Path, ".")
-		var convertedType parquet.ConvertedType = -1
 
+		var convertedType *parquet.ConvertedType
 		if schemaElements[columnNameIndexMap[name]].IsSetConvertedType() {
-			convertedType = schemaElements[columnNameIndexMap[name]].GetConvertedType()
+			ct := schemaElements[columnNameIndexMap[name]].GetConvertedType()
+			convertedType = &ct
 		}
 
-		values, _, err := readDataPageValues(bytesReader, encodingType, page.DataType,
-			convertedType, uint64(len(page.DataTable.DefinitionLevels))-numNulls,
+		values, err := encoding.Decode(bytesReader, encodingType, page.DataType,
+			uint64(len(page.DataTable.DefinitionLevels))-numNulls,
 			uint64(schemaElements[columnNameIndexMap[name]].GetTypeLength()))
 		if err != nil {
 			return err
 		}
 
-		tableValues := getTableValues(values, page.DataType)
+		tableValues := encoding.ToConvertedValues(values, page.DataType, convertedType)
 
 		j := 0
 		for i := 0; i < len(page.DataTable.DefinitionLevels); i++ {
